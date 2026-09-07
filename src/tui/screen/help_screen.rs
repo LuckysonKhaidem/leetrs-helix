@@ -3,7 +3,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
+    style::Style,
     widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 
@@ -26,87 +26,124 @@ impl Screen for HelpScreen {
         let help_area = chunks[0];
 
         let items: Vec<ListItem> = vec![
-            create_split_item("Global", "", Color::White, help_area.width),
+            create_split_item("Global", "", crate::theme::FG, help_area.width),
             create_split_item(
                 "Tab",
                 "Switch between Problems and Help",
-                Color::Cyan,
+                crate::theme::ACCENT,
                 help_area.width,
             ),
             create_split_item(
                 "q / Esc",
                 "Quit the application (from any tab)",
-                Color::Cyan,
+                crate::theme::ACCENT,
                 help_area.width,
             ),
-            create_split_item("", "", Color::White, help_area.width),
-            create_split_item("Problems", "", Color::White, help_area.width),
+            create_split_item("", "", crate::theme::FG, help_area.width),
+            create_split_item("Problems", "", crate::theme::FG, help_area.width),
             create_split_item(
                 "/",
                 "Start searching problems",
-                Color::Green,
+                crate::theme::EASY,
                 help_area.width,
             ),
             create_split_item(
                 "t",
                 "Open topic-filter overlay (multi-select)",
-                Color::Green,
+                crate::theme::EASY,
+                help_area.width,
+            ),
+            create_split_item(
+                "c",
+                "Open company-filter overlay (multi-select)",
+                crate::theme::EASY,
                 help_area.width,
             ),
             create_split_item(
                 "j / k or ↓ / ↑",
                 "Move selection down / up",
-                Color::Green,
+                crate::theme::EASY,
                 help_area.width,
             ),
             create_split_item(
                 "Ctrl+d / Ctrl+u",
                 "Scroll down / up 10 items (list & topic filter)",
-                Color::Green,
+                crate::theme::EASY,
                 help_area.width,
             ),
             create_split_item(
                 "Enter",
                 "Select the highlighted problem",
-                Color::Green,
+                crate::theme::EASY,
                 help_area.width,
             ),
             create_split_item(
                 "1 / 2 / 3 / 4",
                 "Filter by difficulty (Easy / Med / Hard / All)",
-                Color::Green,
+                crate::theme::EASY,
                 help_area.width,
             ),
             create_split_item(
                 "Ctrl+j / Ctrl+k",
                 "Move selection while searching",
-                Color::Green,
+                crate::theme::EASY,
                 help_area.width,
             ),
-            create_split_item("", "", Color::White, help_area.width),
-            create_split_item("Topic Filter Overlay", "", Color::White, help_area.width),
+            create_split_item(
+                "l",
+                "Open language picker (↑/↓ navigate, Enter select)",
+                crate::theme::EASY,
+                help_area.width,
+            ),
+            create_split_item("", "", crate::theme::FG, help_area.width),
+            create_split_item("Language Picker", "", crate::theme::FG, help_area.width),
+            create_split_item(
+                "↑/↓ or j/k",
+                "Navigate the language list",
+                crate::theme::ACCENT,
+                help_area.width,
+            ),
+            create_split_item(
+                "Enter",
+                "Select the highlighted language",
+                crate::theme::ACCENT,
+                help_area.width,
+            ),
+            create_split_item(
+                "Esc",
+                "Close without changing",
+                crate::theme::ACCENT,
+                help_area.width,
+            ),
+            create_split_item("", "", crate::theme::FG, help_area.width),
+            create_split_item(
+                "Topic Filter Overlay",
+                "",
+                crate::theme::FG,
+                help_area.width,
+            ),
             create_split_item(
                 "Type text",
                 "Filter topics in real-time",
-                Color::Cyan,
+                crate::theme::ACCENT,
                 help_area.width,
             ),
             create_split_item(
                 "Ctrl+j/k or ↓/↑",
                 "Navigate topics while searching",
-                Color::Cyan,
+                crate::theme::ACCENT,
                 help_area.width,
             ),
             create_split_item(
                 "Enter / Space",
                 "Toggle selected topic",
-                Color::Cyan,
+                crate::theme::ACCENT,
                 help_area.width,
             ),
             create_split_item(
                 "Esc",
                 "Clear search query / close overlay",
-                Color::Cyan,
+                crate::theme::ACCENT,
                 help_area.width,
             ),
         ];
@@ -115,14 +152,14 @@ impl Screen for HelpScreen {
             Block::default()
                 .borders(Borders::ALL)
                 .title(" Help - Key Bindings ")
-                .border_style(Style::default().fg(Color::DarkGray)),
+                .border_style(Style::default().fg(crate::theme::FG_SUBTLE)),
         );
 
         frame.render_widget(help_list, help_area);
 
         // Bottom hint bar
         let hint = Paragraph::new("Press Tab to return to Problems tab.")
-            .style(Style::default().fg(Color::DarkGray));
+            .style(Style::default().fg(crate::theme::FG_SUBTLE));
         frame.render_widget(hint, chunks[1]);
     }
 

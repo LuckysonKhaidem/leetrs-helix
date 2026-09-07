@@ -19,7 +19,8 @@ pub mod submission;
 // working without any changes in other modules.
 pub use language::{Identifier, Language};
 pub use problem::{
-    GraphQLQuery, ProblemSummary, Question, QuestionSnippet, QuestionTopics, Topic, UserDetail,
+    GraphQLQuery, InMemoryProblem, LastSubmission, LeetCodeCompany, LeetCodeLanguage,
+    ProblemSummary, Question, QuestionSnippet, QuestionTopics, SavedSolution, Topic, UserDetail,
 };
 pub use submission::{
     SubmissionCheckResult, SubmitPayload, SubmitResponse, TestPayload, TestSubmissionCheckResult,
@@ -53,14 +54,18 @@ mod tests {
             assert_eq!(parsed.to_lang_slug(), slug);
         }
 
-        // Unknown slugs and extensions fall back to Mysql safely
-        assert_eq!(
-            Language::from("javascript".to_string()).to_lang_slug(),
-            "mysql"
-        );
-        assert_eq!(Language::from("".to_string()).to_lang_slug(), "mysql");
-        assert_eq!(Language::from_extension("js").to_lang_slug(), "mysql");
-        assert_eq!(Language::from_extension("").to_lang_slug(), "mysql");
+        for (lang, slug, ext, prefix) in cases {
+            assert_eq!(lang.to_lang_slug(), slug);
+            assert_eq!(lang.code_extension(), ext);
+            assert_eq!(lang.meta_comment_prefix(), prefix);
+            let parsed = Language::from(slug.to_string());
+            assert_eq!(parsed.to_lang_slug(), slug);
+        }
+
+        // Unknown slug falls back to C++ (first variant in the enum).
+        assert_eq!(Language::from("".to_string()).to_lang_slug(), "cpp");
+        assert_eq!(Language::from_extension("js").to_lang_slug(), "javascript");
+        assert_eq!(Language::from_extension("").to_lang_slug(), "cpp");
     }
 
     #[test]

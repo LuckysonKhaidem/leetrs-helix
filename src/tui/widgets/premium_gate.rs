@@ -20,7 +20,7 @@ impl PremiumGate {
                 }
             }
             None => Err(
-                "This problem is premium. please login to access it. (use `leetrs auth`)"
+                "This problem is premium. please login to access it. (use `leetrs-helix auth`)"
                     .to_string(),
             ),
         }

@@ -10,23 +10,24 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
+    style::Style,
     widgets::{Block, Borders, Paragraph, Table},
 };
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::{
-    models::{ProblemSummary, UserDetail},
+    models::{Language, ProblemSummary, UserDetail},
     tui::{
         Action,
         renderers::render_problem_row,
         screen::Screen,
         widgets::{
-            filter_state::{FilterState, TopicInputMode},
+            filter_state::{FilterState, TagInputMode},
+            language_overlay::{LanguageOverlay, render_language_overlay},
             premium_gate::PremiumGate,
             problem_table::ProblemTable,
             search_bar::SearchBar,
-            topic_overlay::render_topic_overlay,
+            topic_overlay::render_tag_overlay,
         },
     },
 };
@@ -36,6 +37,15 @@ pub enum InputMode {
     Editing,
     Normal,
     TopicFilter,
+    CompanyFilter,
+    LanguageFilter,
+}
+
+/// Which tag-filter overlay is being handled.
+#[derive(Clone, Copy)]
+enum FilterKind {
+    Topic,
+    Company,
 }
 
 /// The problem-list screen: a searchable, filterable table of all problems.
@@ -51,6 +61,12 @@ pub struct SelectionScreen {
     /// Tracks the previous key for `gg` (jump-to-top) detection.
     pub previous_key: Option<KeyCode>,
     pub user_detail: Option<UserDetail>,
+    /// Language currently selected for code-stub generation (LeetCode slug).
+    pub language_slug: String,
+    /// Derived enum used only for the status-bar display.
+    pub language: Language,
+    /// The language picker overlay state.
+    pub language_overlay: LanguageOverlay,
 }
 
 impl Screen for SelectionScreen {
@@ -68,7 +84,7 @@ impl Screen for SelectionScreen {
         let title = format!(" Search ({} matches) ", self.filtered_problems.len());
         let input_widget = Paragraph::new(self.search.value())
             .style(match self.input_mode {
-                InputMode::Editing => Style::default().fg(Color::Yellow),
+                InputMode::Editing => Style::default().fg(crate::theme::ACCENT),
                 _ => Style::default(),
             })
             .block(Block::default().borders(Borders::ALL).title(title));
@@ -84,7 +100,9 @@ impl Screen for SelectionScreen {
         let table_title = self.build_table_title();
         let header_cells = ["ID", "Name", "Acceptance", "Topics", "Premium?", "Done"]
             .into_iter()
-            .map(|h| ratatui::widgets::Cell::from(h).style(Style::default().fg(Color::Yellow)));
+            .map(|h| {
+                ratatui::widgets::Cell::from(h).style(Style::default().fg(crate::theme::ACCENT))
+            });
         let header = ratatui::widgets::Row::new(header_cells).style(Style::default());
 
         let rows: Vec<_> = self
@@ -110,7 +128,11 @@ impl Screen for SelectionScreen {
                 .title(table_title.as_str())
                 .borders(Borders::ALL),
         )
-        .row_highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White))
+        .row_highlight_style(
+            Style::default()
+                .bg(crate::theme::SELECTION)
+                .fg(crate::theme::FG),
+        )
         .highlight_symbol(">> ");
 
         frame.render_stateful_widget(table, chunks[1], &mut self.table.state);
@@ -129,22 +151,36 @@ impl Screen for SelectionScreen {
             InputMode::Normal => (
                 "Press '/' to search, 'j'/'k' to scroll, 'Enter' to select, 'o' to open in \
                 browser, 'q' to quit.",
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(crate::theme::FG_SUBTLE),
             ),
             InputMode::Editing => (
                 "Type to filter, press 'Esc' to return to list, press 'Enter' to select.",
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(crate::theme::ACCENT),
             ),
             InputMode::TopicFilter => match self.filters.topics.mode {
-                TopicInputMode::Normal => (
+                TagInputMode::Normal => (
                     "'/': search topics   j/k: navigate   Space/Enter: toggle   c: clear   Esc: close",
-                    Style::default().fg(Color::Cyan),
+                    Style::default().fg(crate::theme::FG),
                 ),
-                TopicInputMode::Editing => (
+                TagInputMode::Editing => (
                     "Type to filter topics   Ctrl+j/k: navigate   Enter: toggle   Esc: done searching",
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(crate::theme::ACCENT),
                 ),
             },
+            InputMode::CompanyFilter => match self.filters.companies.mode {
+                TagInputMode::Normal => (
+                    "'/': search companies   j/k: navigate   Space/Enter: toggle   c: clear   Esc: close",
+                    Style::default().fg(crate::theme::FG),
+                ),
+                TagInputMode::Editing => (
+                    "Type to filter companies   Ctrl+j/k: navigate   Enter: toggle   Esc: done searching",
+                    Style::default().fg(crate::theme::ACCENT),
+                ),
+            },
+            InputMode::LanguageFilter => (
+                "↑/↓: navigate   Enter: select language   Esc: close",
+                Style::default().fg(crate::theme::FG),
+            ),
         };
         frame.render_widget(
             Paragraph::new(instruction_text).style(instruction_style),
@@ -153,19 +189,23 @@ impl Screen for SelectionScreen {
 
         if let InputMode::Normal = self.input_mode {
             frame.render_widget(
-                Paragraph::new("1: Easy  2: Medium  3: Hard  4: All  |  t: Topic filter")
-                    .style(Style::default().fg(Color::DarkGray)),
+                Paragraph::new(format!(
+                    "1: Easy  2: Medium  3: Hard  4: All  |  t: Topic  c: Company  l: Language ({})",
+                    self.language_slug
+                ))
+                .style(Style::default().fg(crate::theme::FG_SUBTLE)),
                 bottom_bar[1],
             );
         }
 
-        let topic_status_widget = if self.filters.topics.selected_topics.is_empty() {
-            Paragraph::new("Press ? to view help.").style(Style::default().fg(Color::DarkGray))
+        let topic_status_widget = if self.filters.topics.selected_tags.is_empty() {
+            Paragraph::new("Press ? to view help.")
+                .style(Style::default().fg(crate::theme::FG_SUBTLE))
         } else {
             let mut names: Vec<&str> = self
                 .filters
                 .topics
-                .selected_topics
+                .selected_tags
                 .iter()
                 .map(|s| s.as_str())
                 .collect();
@@ -179,22 +219,42 @@ impl Screen for SelectionScreen {
                     names.len() - 2
                 )
             };
-            Paragraph::new(display).style(Style::default().fg(Color::Cyan))
+            Paragraph::new(display).style(Style::default().fg(crate::theme::FG))
         };
         frame.render_widget(topic_status_widget, bottom_bar[2]);
 
         if let InputMode::TopicFilter = self.input_mode {
-            render_topic_overlay(
+            render_tag_overlay(
                 frame,
                 &mut self.filters.topics,
                 self.filtered_problems.len(),
+                "Topic Filter",
             );
+        }
+
+        if let InputMode::CompanyFilter = self.input_mode {
+            render_tag_overlay(
+                frame,
+                &mut self.filters.companies,
+                self.filtered_problems.len(),
+                "Company Filter",
+            );
+        }
+
+        if let InputMode::LanguageFilter = self.input_mode {
+            render_language_overlay(frame, &mut self.language_overlay, &self.language_slug);
         }
     }
 
     fn event_loop(&mut self, key_event: &KeyEvent) -> Option<Action> {
         if let InputMode::TopicFilter = self.input_mode {
             return self.handle_topic_filter_key(key_event);
+        }
+        if let InputMode::CompanyFilter = self.input_mode {
+            return self.handle_company_filter_key(key_event);
+        }
+        if let InputMode::LanguageFilter = self.input_mode {
+            return self.handle_language_filter_key(key_event);
         }
 
         if let KeyCode::Enter = key_event.code
@@ -215,23 +275,17 @@ impl Screen for SelectionScreen {
                 KeyCode::Down | KeyCode::Char('j') => self.table.next(),
                 KeyCode::Up | KeyCode::Char('k') => self.table.previous(),
                 KeyCode::Left | KeyCode::Char('h') => self.table.state.select_next_column(),
-                KeyCode::Right | KeyCode::Char('l') => self.table.state.select_previous_column(),
-                KeyCode::Char('/') => self.input_mode = InputMode::Editing,
+                KeyCode::Right => self.table.state.select_previous_column(),
+                KeyCode::Char('l') => {
+                    self.input_mode = InputMode::LanguageFilter;
+                }
                 KeyCode::Char('t') => {
                     self.input_mode = InputMode::TopicFilter;
-                    self.filters.topics.mode = TopicInputMode::Normal;
                 }
-                KeyCode::Char('o') => {
-                    if let Some(i) = self.table.state.selected()
-                        && !self.filtered_problems.is_empty()
-                    {
-                        let index = self.filtered_problems[i];
-                        let selected = &self.all_problems[index];
-                        let url = format!("https://leetcode.com/problems/{}", selected.slug);
-                        self.input_mode = InputMode::Normal;
-                        return Some(Action::Open(url));
-                    }
+                KeyCode::Char('c') => {
+                    self.input_mode = InputMode::CompanyFilter;
                 }
+                KeyCode::Char('/') => self.input_mode = InputMode::Editing,
                 KeyCode::Char('g') => {
                     if let Some(prev_key) = self.previous_key
                         && prev_key == KeyCode::Char('g')
@@ -272,7 +326,9 @@ impl Screen for SelectionScreen {
                 }
             },
 
-            InputMode::TopicFilter => unreachable!(),
+            InputMode::TopicFilter | InputMode::CompanyFilter | InputMode::LanguageFilter => {
+                unreachable!()
+            }
         }
         self.previous_key = Some(key_event.code);
         None
@@ -280,9 +336,15 @@ impl Screen for SelectionScreen {
 }
 
 impl SelectionScreen {
-    pub fn new(problems: Rc<[ProblemSummary]>, user_detail: Option<UserDetail>) -> Self {
+    pub fn new(
+        problems: Rc<[ProblemSummary]>,
+        user_detail: Option<UserDetail>,
+        language_slug: String,
+        languages: Vec<crate::models::LeetCodeLanguage>,
+    ) -> Self {
         let len = problems.len();
-        let filters = FilterState::new();
+        let filters = FilterState::new(&problems);
+        let language = Language::from_leetcode_slug(&language_slug).unwrap_or(Language::Rust);
         Self {
             filtered_problems: (0..len).collect(),
             table: ProblemTable::new(len),
@@ -292,7 +354,16 @@ impl SelectionScreen {
             input_mode: InputMode::Normal,
             previous_key: None,
             user_detail,
+            language_slug,
+            language,
+            language_overlay: LanguageOverlay::new(languages),
         }
+    }
+
+    /// Updates the active language slug and the derived display enum.
+    pub fn set_language(&mut self, slug: &str) {
+        self.language_slug = slug.to_string();
+        self.language = Language::from_leetcode_slug(slug).unwrap_or(Language::Rust);
     }
 
     /// Sets the difficulty filter and re-applies all active filters.
@@ -309,85 +380,139 @@ impl SelectionScreen {
     }
 
     fn handle_topic_filter_key(&mut self, key_event: &KeyEvent) -> Option<Action> {
-        match self.filters.topics.mode {
-            TopicInputMode::Normal => match key_event.code {
-                KeyCode::Esc => {
-                    self.input_mode = InputMode::Normal;
-                }
-                KeyCode::Char('/') => {
-                    self.filters.topics.mode = TopicInputMode::Editing;
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.filters.topics.next();
-                }
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.filters.topics.previous();
-                }
-                KeyCode::PageDown | KeyCode::Char('d') => {
-                    self.filters.topics.scroll_down(10);
-                }
-                KeyCode::PageUp | KeyCode::Char('u') => {
-                    self.filters.topics.scroll_up(10);
-                }
-                KeyCode::Char(' ') | KeyCode::Enter => {
-                    self.filters.topics.toggle_current();
-                    self.apply_filters();
-                }
-                KeyCode::Char('c') => {
-                    self.filters.topics.clear();
-                    self.apply_filters();
-                }
-                _ => {}
-            },
+        let changed = self.handle_tag_filter_key(key_event, FilterKind::Topic);
+        if changed {
+            self.apply_filters();
+        }
+        None
+    }
 
-            TopicInputMode::Editing => {
-                if key_event.modifiers.contains(KeyModifiers::CONTROL) {
-                    match key_event.code {
-                        KeyCode::Char('j') | KeyCode::Char('J') => {
-                            self.filters.topics.next();
-                            return None;
-                        }
-                        KeyCode::Char('k') | KeyCode::Char('K') => {
-                            self.filters.topics.previous();
-                            return None;
-                        }
-                        KeyCode::Char('d') | KeyCode::Char('D') => {
-                            self.filters.topics.scroll_down(10);
-                            return None;
-                        }
-                        KeyCode::Char('u') | KeyCode::Char('U') => {
-                            self.filters.topics.scroll_up(10);
-                            return None;
-                        }
-                        _ => {}
-                    }
-                }
+    fn handle_company_filter_key(&mut self, key_event: &KeyEvent) -> Option<Action> {
+        let changed = self.handle_tag_filter_key(key_event, FilterKind::Company);
+        if changed {
+            self.apply_filters();
+        }
+        None
+    }
 
-                match key_event.code {
+    /// Shared key handling for the topic and company filter overlays.
+    ///
+    /// Returns `true` if a filter changed and `apply_filters` should be called.
+    fn handle_tag_filter_key(&mut self, key_event: &KeyEvent, kind: FilterKind) -> bool {
+        let mut changed = false;
+        {
+            let filter = match kind {
+                FilterKind::Topic => &mut self.filters.topics,
+                FilterKind::Company => &mut self.filters.companies,
+            };
+            match filter.mode {
+                TagInputMode::Normal => match key_event.code {
                     KeyCode::Esc => {
-                        self.filters.topics.mode = TopicInputMode::Normal;
+                        self.input_mode = InputMode::Normal;
                     }
-                    KeyCode::Enter => {
-                        self.filters.topics.toggle_current();
-                        self.apply_filters();
+                    KeyCode::Char('/') => {
+                        filter.mode = TagInputMode::Editing;
                     }
-                    KeyCode::Down => {
-                        self.filters.topics.next();
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        filter.next();
                     }
-                    KeyCode::Up => {
-                        self.filters.topics.previous();
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        filter.previous();
                     }
-                    KeyCode::PageDown => {
-                        self.filters.topics.scroll_down(10);
+                    KeyCode::PageDown | KeyCode::Char('d') => {
+                        filter.scroll_down(10);
                     }
-                    KeyCode::PageUp => {
-                        self.filters.topics.scroll_up(10);
+                    KeyCode::PageUp | KeyCode::Char('u') => {
+                        filter.scroll_up(10);
                     }
-                    _ => {
-                        self.filters.topics.handle_key(key_event);
+                    KeyCode::Char(' ') | KeyCode::Enter => {
+                        filter.toggle_current();
+                        changed = true;
+                    }
+                    KeyCode::Char('c') => {
+                        filter.clear();
+                        changed = true;
+                    }
+                    _ => {}
+                },
+
+                TagInputMode::Editing => {
+                    if key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                        match key_event.code {
+                            KeyCode::Char('j') | KeyCode::Char('J') => {
+                                filter.next();
+                            }
+                            KeyCode::Char('k') | KeyCode::Char('K') => {
+                                filter.previous();
+                            }
+                            KeyCode::Char('d') | KeyCode::Char('D') => {
+                                filter.scroll_down(10);
+                            }
+                            KeyCode::Char('u') | KeyCode::Char('U') => {
+                                filter.scroll_up(10);
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        match key_event.code {
+                            KeyCode::Esc => {
+                                filter.mode = TagInputMode::Normal;
+                            }
+                            KeyCode::Enter => {
+                                filter.toggle_current();
+                                changed = true;
+                            }
+                            KeyCode::Down => {
+                                filter.next();
+                            }
+                            KeyCode::Up => {
+                                filter.previous();
+                            }
+                            KeyCode::PageDown => {
+                                filter.scroll_down(10);
+                            }
+                            KeyCode::PageUp => {
+                                filter.scroll_up(10);
+                            }
+                            _ => {
+                                filter.handle_key(key_event);
+                            }
+                        }
                     }
                 }
             }
+        }
+        changed
+    }
+
+    /// Handles key events while the language picker overlay is open.
+    ///
+    /// Arrow keys / `j` / `k` move the cursor; `Enter` selects the highlighted
+    /// language and closes the overlay; `Esc` closes without changing.
+    fn handle_language_filter_key(&mut self, key_event: &KeyEvent) -> Option<Action> {
+        match key_event.code {
+            KeyCode::Esc => {
+                self.input_mode = InputMode::Normal;
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.language_overlay.next();
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.language_overlay.previous();
+            }
+            KeyCode::PageDown | KeyCode::Char('d') => {
+                self.language_overlay.scroll_down(10);
+            }
+            KeyCode::PageUp | KeyCode::Char('u') => {
+                self.language_overlay.scroll_up(10);
+            }
+            KeyCode::Enter => {
+                if let Some(slug) = self.language_overlay.selected_slug() {
+                    self.input_mode = InputMode::Normal;
+                    return Some(Action::SetLanguage(slug));
+                }
+            }
+            _ => {}
         }
         None
     }
@@ -400,13 +525,13 @@ impl SelectionScreen {
             _ => "",
         };
 
-        let topic_part = match self.filters.topics.selected_topics.len() {
+        let topic_part = match self.filters.topics.selected_tags.len() {
             0 => String::new(),
             n => {
                 let mut names: Vec<&str> = self
                     .filters
                     .topics
-                    .selected_topics
+                    .selected_tags
                     .iter()
                     .map(|s| s.as_str())
                     .collect();
@@ -439,17 +564,37 @@ mod tests {
                 submitted: 200,
                 is_paid: false,
                 topics: vec![format!("Topic_{:02}", i)],
+                companies: vec![format!("Company_{:02}", i)],
+                frequency: 0.0,
                 status: None,
             })
             .collect();
-        SelectionScreen::new(Rc::from(problems.into_boxed_slice()), None)
+        SelectionScreen::new(
+            Rc::from(problems.into_boxed_slice()),
+            None,
+            "rust".to_string(),
+            vec![
+                crate::models::LeetCodeLanguage {
+                    id: 0,
+                    name: "cpp".to_string(),
+                },
+                crate::models::LeetCodeLanguage {
+                    id: 1,
+                    name: "rust".to_string(),
+                },
+                crate::models::LeetCodeLanguage {
+                    id: 2,
+                    name: "python3".to_string(),
+                },
+            ],
+        )
     }
 
     #[test]
     fn test_handle_topic_filter_j_and_k_navigation() {
         let mut screen = create_test_screen();
         screen.input_mode = InputMode::TopicFilter;
-        screen.filters.topics.mode = TopicInputMode::Normal;
+        screen.filters.topics.mode = TagInputMode::Normal;
         assert_eq!(screen.filters.topics.cursor(), 0);
 
         // Send 'j' key event to move down
@@ -467,32 +612,32 @@ mod tests {
     fn test_handle_topic_filter_search_and_esc() {
         let mut screen = create_test_screen();
         screen.input_mode = InputMode::TopicFilter;
-        screen.filters.topics.mode = TopicInputMode::Normal;
+        screen.filters.topics.mode = TagInputMode::Normal;
 
         // Press '/' to enter search mode
         let key_slash = KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE);
         screen.event_loop(&key_slash);
-        assert_eq!(screen.filters.topics.mode, TopicInputMode::Editing);
+        assert_eq!(screen.filters.topics.mode, TagInputMode::Editing);
 
-        // Type "Array" into topic filter search
-        for c in "Array".chars() {
+        // Type "Topic_00" into topic filter search
+        for c in "Topic_00".chars() {
             let key = KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
             screen.event_loop(&key);
         }
 
-        assert_eq!(screen.filters.topics.search_input.value(), "Array");
+        assert_eq!(screen.filters.topics.search_input.value(), "Topic_00");
         assert!(
             screen
                 .filters
                 .topics
-                .filtered_topics
-                .contains(&"Array".to_string())
+                .filtered_tags
+                .contains(&"Topic_00".to_string())
         );
 
         // First Esc exits search mode to Normal mode in topic filter
         let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
         screen.event_loop(&esc);
-        assert_eq!(screen.filters.topics.mode, TopicInputMode::Normal);
+        assert_eq!(screen.filters.topics.mode, TagInputMode::Normal);
         assert!(matches!(screen.input_mode, InputMode::TopicFilter));
 
         // Second Esc closes topic filter overlay

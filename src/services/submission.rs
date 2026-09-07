@@ -101,7 +101,7 @@ impl SubmissionService {
                 .unwrap_or_default(),
         );
 
-        println!("🔍 Resolving ID for '{}'...", slug);
+        crate::log::info(format!("🔍 Resolving ID for '{}'...", slug));
         let question = self.client.get_question_by_slug(&slug).await.map_err(|e| {
             EngineError::Other(format!(
                 "Failed to fetch question. Does the filename match the problem slug? {}",
@@ -116,23 +116,48 @@ impl SubmissionService {
     /// a structured [`SubmissionResult`].
     pub async fn submit_or_test(&self, file: &str, is_test: bool) -> Result<SubmissionResult> {
         let (code, slug, language, question) = self.read_and_resolve(file).await?;
+        self.submit_code_core(&code, &slug, language, &question, is_test)
+            .await
+    }
 
-        println!("🚀 Submitting {}...", file);
+    /// Submits an in-memory code string (no file on disk) for the given slug
+    /// and language. Fetches the question metadata internally.
+    pub async fn submit_or_test_code(
+        &self,
+        code: &str,
+        slug: &str,
+        language: Language,
+        is_test: bool,
+    ) -> Result<SubmissionResult> {
+        let question = self.client.get_question_by_slug(slug).await?;
+        self.submit_code_core(code, slug, language, &question, is_test)
+            .await
+    }
 
+    /// Shared core that runs the test/submit request and builds a
+    /// [`SubmissionResult`].
+    async fn submit_code_core(
+        &self,
+        code: &str,
+        slug: &str,
+        language: Language,
+        question: &Question,
+        is_test: bool,
+    ) -> Result<SubmissionResult> {
         if is_test {
             let interpret_id = self
                 .client
                 .test_code(
-                    &slug,
+                    slug,
                     &question.question_id,
                     language.to_lang_slug(),
-                    &code,
+                    code,
                     &question.example_test_cases,
                 )
                 .await
                 .map_err(|e| EngineError::Other(format!("Test Submission failed: {}", e)))?;
 
-            println!("⏳ Code queued. Waiting for execution results...");
+            crate::log::info("⏳ Code queued. Waiting for execution results...");
             let r = self
                 .client
                 .check_test_submission(interpret_id)
@@ -156,18 +181,18 @@ impl SubmissionService {
                 runtime_percentile: r.runtime_percentile,
                 compile_error: None,
                 full_runtime_error: r.full_runtime_error,
-                input: None,
+                input: Some(question.example_test_cases.clone()),
                 expected_output: None,
                 code_output: r.code_output.map(|v| v.join("\t")),
             })
         } else {
             let submission_id = self
                 .client
-                .submit_code(&slug, &question.question_id, language.to_lang_slug(), &code)
+                .submit_code(slug, &question.question_id, language.to_lang_slug(), code)
                 .await
                 .map_err(|e| EngineError::Other(format!("Submission failed: {}", e)))?;
 
-            println!("⏳ Code queued. Waiting for execution results...");
+            crate::log::info("⏳ Code queued. Waiting for execution results...");
             let r = self
                 .client
                 .check_submission(submission_id)

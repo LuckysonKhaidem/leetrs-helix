@@ -21,6 +21,12 @@ trait Pollable {
     fn is_complete(&self) -> bool;
 }
 
+/// Details of a single submission fetched from LeetCode.
+#[derive(serde::Deserialize)]
+struct SubmissionDetails {
+    code: String,
+}
+
 impl Pollable for crate::models::TestSubmissionCheckResult {
     fn is_complete(&self) -> bool {
         // LeetCode's state moves from "PENDING" or "STARTED" to "SUCCESS" when done
@@ -83,6 +89,14 @@ pub trait LeetCodeApi {
     fn get_topics_question_list(
         &self,
     ) -> impl std::future::Future<Output = Result<Vec<crate::models::QuestionTopics>>> + Send;
+
+    fn get_languages(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<crate::models::LeetCodeLanguage>>> + Send;
+
+    fn get_company_tags(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<crate::models::LeetCodeCompany>>> + Send;
 
     fn get_problem_list(
         &self,
@@ -463,6 +477,196 @@ impl LeetCodeClient {
         Ok(response)
     }
 
+    /// Fetches the list of programming languages supported by LeetCode.
+    pub async fn get_languages(&self) -> Result<Vec<crate::models::LeetCodeLanguage>> {
+        let query_string = r#"
+        query languageList {
+            languageList {
+                id
+                name
+            }
+        }
+        "#;
+
+        let query = GraphQLQuery {
+            query: query_string.to_string(),
+            variables: None,
+            operation_name: Some("languageList".to_string()),
+        };
+
+        #[derive(serde::Deserialize)]
+        struct LanguageWrapper {
+            #[serde(rename = "languageList")]
+            language_list: Vec<crate::models::LeetCodeLanguage>,
+        }
+
+        let response: LanguageWrapper = self.execute_graphql(query).await?;
+        let mut languages = response.language_list;
+        languages.sort_by_key(|l| l.id);
+        Ok(languages)
+    }
+
+    /// Fetches the list of company tags along with their associated question IDs.
+    ///
+    /// Requires an authenticated session for `questionIds` to be populated.
+    pub async fn get_company_tags(&self) -> Result<Vec<crate::models::LeetCodeCompany>> {
+        let query_string = r#"
+        query companyTags {
+            companyTags {
+                id
+                name
+                slug
+                questionIds
+                frequencies
+            }
+        }
+        "#;
+
+        let query = GraphQLQuery {
+            query: query_string.to_string(),
+            variables: None,
+            operation_name: Some("companyTags".to_string()),
+        };
+
+        #[derive(serde::Deserialize)]
+        struct CompanyRaw {
+            id: String,
+            name: String,
+            slug: String,
+            #[serde(rename = "questionIds")]
+            question_ids: Vec<u64>,
+            /// A JSON string mapping question ID -> array of frequency stats.
+            #[serde(default)]
+            frequencies: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct CompanyWrapper {
+            #[serde(rename = "companyTags")]
+            company_tags: Vec<CompanyRaw>,
+        }
+
+        let response: CompanyWrapper = self.execute_graphql(query).await?;
+        let mut companies: Vec<crate::models::LeetCodeCompany> = response
+            .company_tags
+            .into_iter()
+            .map(|raw| {
+                // Parse the frequencies JSON: { "<id>": [.., .., .., .., freq6mo, ..] }
+                let parsed: std::collections::HashMap<String, serde_json::Value> =
+                    serde_json::from_str(&raw.frequencies).unwrap_or_default();
+                let frequencies = parsed
+                    .into_iter()
+                    .filter_map(|(qid, v)| {
+                        let arr = v.as_array()?;
+                        // Index 4 holds the 6-month frequency (recency).
+                        let freq = arr.get(4)?.as_f64()?;
+                        Some((qid, freq))
+                    })
+                    .collect();
+                crate::models::LeetCodeCompany {
+                    id: raw.id,
+                    name: raw.name,
+                    slug: raw.slug,
+                    question_ids: raw.question_ids,
+                    frequencies,
+                }
+            })
+            .collect();
+        companies.sort_by_key(|a| a.name.to_lowercase());
+        Ok(companies)
+    }
+
+    /// Fetches the most recent submission for a problem/language.
+    ///
+    /// Returns `None` if the user has no submission for that slug + language.
+    pub async fn get_last_submission(
+        &self,
+        title_slug: &str,
+        lang: &str,
+    ) -> Result<Option<crate::models::LastSubmission>> {
+        let query_string = r#"
+        query submissionList($questionSlug: String!, $offset: Int!, $limit: Int!) {
+            submissionList(offset: $offset, limit: $limit, questionSlug: $questionSlug) {
+                submissions { id status lang }
+            }
+        }
+        "#;
+
+        let query = GraphQLQuery {
+            query: query_string.to_string(),
+            variables: Some(serde_json::json!({
+                "questionSlug": title_slug,
+                "offset": 0,
+                "limit": 20,
+            })),
+            operation_name: Some("submissionList".to_string()),
+        };
+
+        #[derive(serde::Deserialize)]
+        struct SubmissionListItem {
+            id: String,
+            status: i64,
+            lang: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct SubmissionList {
+            submissions: Vec<SubmissionListItem>,
+        }
+        #[derive(serde::Deserialize)]
+        struct Wrapper {
+            #[serde(rename = "submissionList")]
+            submission_list: SubmissionList,
+        }
+
+        let response: Wrapper = self.execute_graphql(query).await?;
+        let sub = response
+            .submission_list
+            .submissions
+            .into_iter()
+            .find(|s| s.lang == lang);
+
+        if let Some(sub) = sub {
+            // 10 == Accepted; if the last submission succeeded there's nothing
+            // to resume, so return None.
+            if sub.status == 10 {
+                return Ok(None);
+            }
+            let details = self.get_submission_details(&sub.id).await?;
+            Ok(Some(crate::models::LastSubmission {
+                code: details.code,
+                accepted: false,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Fetches the code and status for a single submission.
+    async fn get_submission_details(&self, id: &str) -> Result<SubmissionDetails> {
+        let query_string = r#"
+        query submissionDetails($submissionId: Int!) {
+            submissionDetails(submissionId: $submissionId) {
+                id
+                code
+            }
+        }
+        "#;
+
+        let query = GraphQLQuery {
+            query: query_string.to_string(),
+            variables: Some(serde_json::json!({ "submissionId": id })),
+            operation_name: Some("submissionDetails".to_string()),
+        };
+
+        #[derive(serde::Deserialize)]
+        struct DetailsWrapper {
+            #[serde(rename = "submissionDetails")]
+            submission_details: SubmissionDetails,
+        }
+
+        let response: DetailsWrapper = self.execute_graphql(query).await?;
+        Ok(response.submission_details)
+    }
+
     /// Fetches the master list of all LeetCode problems
     pub async fn get_problem_list(&self) -> Result<Vec<crate::models::ProblemSummary>> {
         let url = "https://leetcode.com/api/problems/all/";
@@ -527,6 +731,8 @@ impl LeetCodeClient {
                         status,
                         is_paid: paid_only.as_bool().unwrap_or(false),
                         topics: Vec::new(),
+                        companies: Vec::new(),
+                        frequency: 0.0,
                     });
                 }
             }
@@ -607,6 +813,19 @@ impl LeetCodeApi for LeetCodeClient {
         &self,
     ) -> impl std::future::Future<Output = Result<Vec<crate::models::QuestionTopics>>> + Send {
         LeetCodeClient::get_topics_question_list(self)
+    }
+
+    fn get_languages(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<crate::models::LeetCodeLanguage>>> + Send
+    {
+        LeetCodeClient::get_languages(self)
+    }
+
+    fn get_company_tags(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<crate::models::LeetCodeCompany>>> + Send {
+        LeetCodeClient::get_company_tags(self)
     }
 
     fn get_problem_list(

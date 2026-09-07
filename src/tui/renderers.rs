@@ -1,6 +1,6 @@
 //! Shared rendering utilities for the problem-selection TUI.
 use ratatui::{
-    style::{Color, Style},
+    style::Style,
     text::Span,
     widgets::{Cell, Row},
 };
@@ -13,9 +13,9 @@ use crate::models::ProblemSummary;
 /// be unit-tested and reused across views.
 pub fn render_problem_row(p: &ProblemSummary) -> Row<'static> {
     let diff_color = match p.difficulty {
-        1 => Color::Green,
-        2 => Color::Yellow,
-        _ => Color::Red,
+        1 => crate::theme::EASY,
+        2 => crate::theme::MEDIUM,
+        _ => crate::theme::HARD,
     };
 
     let id_cell = Cell::from(Span::styled(
@@ -39,12 +39,12 @@ pub fn render_problem_row(p: &ProblemSummary) -> Row<'static> {
         ""
     };
     let done_cell = match done_text {
-        "\u{f00c}" => Cell::from(done_text).style(Style::default().fg(Color::Green)),
-        _ => Cell::from(done_text).style(Style::default().fg(Color::White)),
+        "\u{f00c}" => Cell::from(done_text).style(Style::default().fg(crate::theme::EASY)),
+        _ => Cell::from(done_text).style(Style::default().fg(crate::theme::FG)),
     };
 
     let premium_text = if p.is_paid { "󰌾" } else { "" };
-    let premium_cell = Cell::from(premium_text).style(Style::default().fg(Color::Red));
+    let premium_cell = Cell::from(premium_text).style(Style::default().fg(crate::theme::HARD));
 
     let topics_text = p
         .topics

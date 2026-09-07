@@ -1,4 +1,4 @@
-//! `leetrs` — binary entry point.
+//! `leetrs-helix` — binary entry point.
 //!
 //! Parses CLI arguments with Clap and dispatches to the appropriate handler.
 //! All heavy lifting (HTTP, TUI, file I/O) lives in the library crate under
@@ -11,8 +11,8 @@ use leetrs::{
 };
 
 #[derive(Parser, Debug)]
-#[command(name = "leetrs")]
-#[command(about = "A Neovim-integrated LeetCode TUI", long_about = None)]
+#[command(name = "leetrs-helix")]
+#[command(about = "A Helix-integrated LeetCode TUI", long_about = None)]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]

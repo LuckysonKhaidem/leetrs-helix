@@ -20,7 +20,7 @@ impl CacheService {
     /// Creates a new [`CacheService`], initialising the data directory on disk
     /// if it does not already exist.
     pub fn new() -> Self {
-        let project_dirs = ProjectDirs::from("com", "shadowmkj", "leetrs")
+        let project_dirs = ProjectDirs::from("com", "shadowmkj", "leetrs-helix")
             .expect("Failed to resolve OS data directory");
         let data_dir = project_dirs.data_dir().to_path_buf();
         if let Err(e) = fs::create_dir_all(&data_dir) {
@@ -30,7 +30,7 @@ impl CacheService {
     }
 
     /// Returns the full path for a named cache file inside the data directory.
-    fn path(&self, name: &str) -> PathBuf {
+    pub fn path(&self, name: &str) -> PathBuf {
         self.data_dir.join(name)
     }
 

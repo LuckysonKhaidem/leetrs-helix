@@ -4,12 +4,12 @@
 //! `submit`, `test`) and the TUI. It wraps [`LeetCodeClient`] and adds local
 //! file I/O and a disk cache for the problem list.
 use crate::cache::CacheService;
+use crate::client::LeetCodeClient;
 use crate::config::CONFIG;
 use crate::error::EngineError;
 use crate::format::format_result;
-use crate::models::{Identifier, ProblemSummary, UserDetail};
-use crate::services::submission::SubmissionService;
-use crate::{client::LeetCodeClient, models::Language};
+use crate::models::{Identifier, Language, ProblemSummary, UserDetail};
+use crate::services::submission::{SubmissionResult, SubmissionService};
 use std::fs;
 use std::path::Path;
 
@@ -27,55 +27,40 @@ impl Picker {
         Picker { client }
     }
 
-    /// Resolves a problem by [`Identifier`], writes the Markdown description
-    /// and language-specific code stub to disk, and returns their paths.
+    /// Fetches a problem and returns it fully in memory (no files written).
     ///
-    /// If both files already exist on disk (slug-based match) they are returned
-    /// immediately without hitting the network.
-    ///
-    /// # Returns
-    /// `(code_file_path, description_file_path)` on success.
-    pub async fn pick(
+    /// This is the core of both [`Picker::pick`] (which additionally writes the
+    /// files for the CLI flow) and the native TUI editor.
+    pub async fn fetch_in_memory(
         &self,
         identifier: &Identifier,
         language: &Option<Language>,
-    ) -> crate::error::Result<(String, String)> {
+    ) -> crate::error::Result<crate::models::InMemoryProblem> {
         let mut language = match language {
-            Some(lang) => lang.clone(),
+            Some(lang) => *lang,
             None => {
                 let config = CONFIG.get().expect("Config not initialised");
                 if let Some(lang) = &config.language {
                     Language::from(lang)
                 } else {
-                    println!("🔤 No language specified, defaulting to Python.");
+                    crate::log::info("🔤 No language specified, defaulting to Python.");
                     Language::Python
                 }
             }
         };
 
-        //TODO: If language is specified, must open that file
-        // else open the file with matching slug.
-        if let Identifier::String(ident) = identifier {
-            let snake_slug = ident.replace("-", "_");
-            let code_filename = format!("{}.{}", snake_slug, language.code_extension());
-            let desc_filename = format!("{}.md", snake_slug);
-            if Path::new(&code_filename).exists() && Path::new(&desc_filename).exists() {
-                return Ok((code_filename, desc_filename));
-            }
-        }
-
         let question = match identifier {
             Identifier::Number(num) => {
-                println!("🔍 Fetching problem ID: {}...", num);
+                crate::log::info(format!("🔍 Fetching problem ID: {}...", num));
                 self.client.get_question_by_id(*num).await?
             }
             Identifier::String(identifier) => {
-                println!("🔍 Fetching problem: {}...", identifier);
+                crate::log::info(format!("🔍 Fetching problem: {}...", identifier));
                 self.client.get_question_by_slug(identifier).await?
             }
         };
 
-        // Convert LeetCode's raw HTML into wrapped terminal text (80 columns wide)
+        // Convert LeetCode's raw HTML into wrapped terminal text.
         let formatted_content = html2md::parse_html(&question.content);
         let md_content = format!("# {}\n\n{}", question.title, formatted_content);
 
@@ -95,11 +80,6 @@ impl Picker {
             }
         };
 
-        //  determine filenames (converting kebab-case to snake_case)
-        let snake_slug = question.title_slug.replace("-", "_");
-        let code_filename = format!("{}.{}", snake_slug, language.code_extension());
-        let desc_filename = format!("{}.md", snake_slug);
-
         let meta = format!(
             "{} id={} slug={} lang={}",
             language.meta_comment_prefix(),
@@ -108,15 +88,68 @@ impl Picker {
             language.to_lang_slug()
         );
 
-        if let Err(e) = fs::write(&code_filename, format!("{}\n\n{}", meta, snippet.code)) {
-            eprintln!("❌ failed to write code file: {}", e);
+        Ok(crate::models::InMemoryProblem {
+            code: format!("{}\n\n{}", meta, snippet.code),
+            description: md_content,
+            slug: question.title_slug.clone(),
+            question_id: question.question_id.clone(),
+            language,
+        })
+    }
+
+    /// Resolves a problem by [`Identifier`], writes the Markdown description
+    /// and language-specific code stub to disk, and returns their paths.
+    ///
+    /// Used by the CLI `pick` flow that opens an external editor. The native
+    /// TUI editor uses [`Picker::fetch_in_memory`] instead and never touches disk.
+    ///
+    /// # Returns
+    /// `(code_file_path, description_file_path)` on success.
+    pub async fn pick(
+        &self,
+        identifier: &Identifier,
+        language: &Option<Language>,
+    ) -> crate::error::Result<(String, String)> {
+        let mut resolved_language = match language {
+            Some(lang) => *lang,
+            None => {
+                let config = CONFIG.get().expect("Config not initialised");
+                if let Some(lang) = &config.language {
+                    Language::from(lang)
+                } else {
+                    crate::log::info("🔤 No language specified, defaulting to Python.");
+                    Language::Python
+                }
+            }
+        };
+
+        //TODO: If language is specified, must open that file
+        // else open the file with matching slug.
+        if let Identifier::String(ident) = identifier {
+            let snake_slug = ident.replace("-", "_");
+            let code_filename = format!("{}.{}", snake_slug, resolved_language.code_extension());
+            let desc_filename = format!("{}.md", snake_slug);
+            if Path::new(&code_filename).exists() && Path::new(&desc_filename).exists() {
+                return Ok((code_filename, desc_filename));
+            }
+        }
+
+        let problem = self.fetch_in_memory(identifier, language).await?;
+        resolved_language = problem.language;
+
+        let snake_slug = problem.slug.replace("-", "_");
+        let code_filename = format!("{}.{}", snake_slug, resolved_language.code_extension());
+        let desc_filename = format!("{}.md", snake_slug);
+
+        if let Err(e) = fs::write(&code_filename, format!("{}\n", problem.code)) {
+            crate::log::error(format!("❌ failed to write code file: {}", e));
             return Err(EngineError::System);
         }
-        if let Err(e) = fs::write(&desc_filename, md_content) {
-            eprintln!("❌ failed to write description file: {}", e);
+        if let Err(e) = fs::write(&desc_filename, problem.description) {
+            crate::log::error(format!("❌ failed to write description file: {}", e));
             return Err(EngineError::System);
         }
-        println!("✅ files generated successfully.");
+        crate::log::info("✅ files generated successfully.");
 
         Ok((code_filename, desc_filename))
     }
@@ -129,6 +162,46 @@ impl Picker {
             Ok(result) => format_result(&result),
             Err(e) => eprintln!("❌ {}", e),
         }
+    }
+
+    /// Runs the solution against the example test cases and returns the
+    /// structured result (does not print).
+    pub async fn run_tests(&self, file: &str) -> crate::error::Result<SubmissionResult> {
+        let service = SubmissionService::new(self.client.clone());
+        service.submit_or_test(file, true).await
+    }
+
+    /// Submits the solution for full judging and returns the structured result
+    /// (does not print).
+    pub async fn submit_solution(&self, file: &str) -> crate::error::Result<SubmissionResult> {
+        let service = SubmissionService::new(self.client.clone());
+        service.submit_or_test(file, false).await
+    }
+
+    /// Runs the example test cases against an in-memory code string (no file).
+    pub async fn run_tests_memory(
+        &self,
+        code: &str,
+        slug: &str,
+        language: Language,
+    ) -> crate::error::Result<SubmissionResult> {
+        let service = SubmissionService::new(self.client.clone());
+        service
+            .submit_or_test_code(code, slug, language, true)
+            .await
+    }
+
+    /// Submits an in-memory code string for full judging (no file).
+    pub async fn submit_solution_memory(
+        &self,
+        code: &str,
+        slug: &str,
+        language: Language,
+    ) -> crate::error::Result<SubmissionResult> {
+        let service = SubmissionService::new(self.client.clone());
+        service
+            .submit_or_test_code(code, slug, language, false)
+            .await
     }
 
     /// Submits the solution file to LeetCode for full judging and prints the
@@ -177,13 +250,108 @@ impl Picker {
         };
         let user_detail: UserDetail = serde_json::from_str(&data).map_err(|e| {
             eprintln!("Failed to parse user details: {}", e);
-            eprintln!("Try running `leetrs tui` again to refresh the cache.");
+            eprintln!("Try running `leetrs-helix tui` again to refresh the cache.");
             if let Err(err) = fs::remove_file(&user_path) {
                 eprintln!("Failed to remove corrupted cache file: {}", err);
             }
             e
         })?;
         Ok(user_detail)
+    }
+
+    /// Returns the list of languages supported by LeetCode.
+    ///
+    /// Uses the same cache-aside strategy as the problem list.
+    pub async fn list_languages(
+        &self,
+    ) -> crate::error::Result<Vec<crate::models::LeetCodeLanguage>> {
+        let cache = CacheService::new();
+        let path = cache.path("languages.json");
+        let data = match fs::read_to_string(&path) {
+            Ok(v) => {
+                let client = self.client.clone();
+                let path_bg = path.clone();
+                tokio::spawn(async move {
+                    let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
+                        let languages = client.get_languages().await?;
+                        let data = serde_json::to_string(&languages)?;
+                        let _ = fs::write(&path_bg, &data);
+                        Ok(())
+                    }
+                    .await;
+                    let _ = result;
+                });
+                v
+            }
+            Err(_) => {
+                let languages = self.client.get_languages().await?;
+                let data = serde_json::to_string(&languages)?;
+                let _ = fs::write(&path, &data);
+                data
+            }
+        };
+        let languages: Vec<crate::models::LeetCodeLanguage> =
+            serde_json::from_str(&data).map_err(|e| {
+                eprintln!("Failed to parse language list: {}", e);
+                eprintln!("Try running `leetrs-helix tui` again to refresh the cache.");
+                if let Err(err) = fs::remove_file(&path) {
+                    eprintln!("Failed to remove corrupted cache file: {}", err);
+                }
+                e
+            })?;
+        Ok(languages)
+    }
+
+    /// Returns the list of company tags (with their question IDs) from LeetCode.
+    ///
+    /// Uses the same cache-aside strategy as the problem list.
+    pub async fn list_companies(
+        &self,
+    ) -> crate::error::Result<Vec<crate::models::LeetCodeCompany>> {
+        let cache = CacheService::new();
+        let path = cache.path("companies.json");
+        let data = match fs::read_to_string(&path) {
+            Ok(v) => {
+                let client = self.client.clone();
+                let path_bg = path.clone();
+                tokio::spawn(async move {
+                    let result: Result<(), Box<dyn std::error::Error + Send + Sync>> = async {
+                        let companies = client.get_company_tags().await?;
+                        let data = serde_json::to_string(&companies)?;
+                        let _ = fs::write(&path_bg, &data);
+                        Ok(())
+                    }
+                    .await;
+                    let _ = result;
+                });
+                v
+            }
+            Err(_) => {
+                let companies = self.client.get_company_tags().await?;
+                let data = serde_json::to_string(&companies)?;
+                let _ = fs::write(&path, &data);
+                data
+            }
+        };
+        let companies: Vec<crate::models::LeetCodeCompany> =
+            serde_json::from_str(&data).map_err(|e| {
+                eprintln!("Failed to parse company list: {}", e);
+                eprintln!("Try running `leetrs-helix tui` again to refresh the cache.");
+                if let Err(err) = fs::remove_file(&path) {
+                    eprintln!("Failed to remove corrupted cache file: {}", err);
+                }
+                e
+            })?;
+        Ok(companies)
+    }
+
+    /// Fetches the most recent submission for a (slug, language) from LeetCode.
+    pub async fn get_last_submission(
+        &self,
+        slug: &str,
+        lang: &str,
+    ) -> crate::error::Result<Option<crate::models::LastSubmission>> {
+        self.client.get_last_submission(slug, lang).await
     }
 
     /// Returns the full problem list, enriched with topic tags.
@@ -219,6 +387,22 @@ impl Picker {
                                 }
                             });
                         }
+                        if let Ok(companies) = client_clone.get_company_tags().await {
+                            for company in companies {
+                                company.question_ids.iter().for_each(|question_id| {
+                                    if let Some(problem) =
+                                        problems.iter_mut().find(|p| p.id == *question_id)
+                                    {
+                                        problem.companies.push(company.name.clone());
+                                        if let Some(freq) =
+                                            company.frequencies.get(&question_id.to_string())
+                                        {
+                                            problem.frequency = problem.frequency.max(*freq);
+                                        }
+                                    }
+                                });
+                            }
+                        }
                         let data = serde_json::to_string(&problems)?;
                         let _ = fs::write(&data_path_bg, data);
                         Ok(())
@@ -239,6 +423,22 @@ impl Picker {
                         }
                     });
                 }
+                if let Ok(companies) = self.client.get_company_tags().await {
+                    for company in companies {
+                        company.question_ids.iter().for_each(|question_id| {
+                            if let Some(problem) =
+                                problems.iter_mut().find(|p| p.id == *question_id)
+                            {
+                                problem.companies.push(company.name.clone());
+                                if let Some(freq) =
+                                    company.frequencies.get(&question_id.to_string())
+                                {
+                                    problem.frequency = problem.frequency.max(*freq);
+                                }
+                            }
+                        });
+                    }
+                }
                 let data = serde_json::to_string(&problems)?;
                 let _ = fs::write(&data_path, &data);
                 data
@@ -246,7 +446,7 @@ impl Picker {
         };
         let problems: Vec<ProblemSummary> = serde_json::from_str(&data).map_err(|e| {
             eprintln!("Failed to parse problem list: {}", e);
-            eprintln!("Try running `leetrs tui` again to refresh the cache.");
+            eprintln!("Try running `leetrs-helix tui` again to refresh the cache.");
             if let Err(err) = fs::remove_file(&data_path) {
                 eprintln!("Failed to remove corrupted cache file: {}", err);
             }

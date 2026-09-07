@@ -1,8 +1,9 @@
 //! Screen trait and sub-module declarations.
+pub mod editor_screen;
 pub mod help_screen;
 pub mod selection_screen;
 
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyEvent, MouseEvent};
 use ratatui::Frame;
 
 use crate::tui::Action;
@@ -17,4 +18,7 @@ pub trait Screen {
     /// Processes a single key event and optionally returns an [`Action`] to
     /// be handled by the top-level event loop.
     fn event_loop(&mut self, event: &KeyEvent) -> Option<Action>;
+    /// Processes a mouse event. Default is a no-op for screens without mouse
+    /// support.
+    fn handle_mouse(&mut self, _event: &MouseEvent) {}
 }

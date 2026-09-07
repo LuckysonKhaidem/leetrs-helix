@@ -26,7 +26,7 @@ pub struct LeetCodeCredentials {
 impl LeetCodeCredentials {
     /// Returns the path to `credentials.json` inside the OS config directory.
     fn get_config_path() -> Option<PathBuf> {
-        let dirs = ProjectDirs::from("com", "shadowmkj", "leetrs")?;
+        let dirs = ProjectDirs::from("com", "shadowmkj", "leetrs-helix")?;
         Some(dirs.config_dir().join("credentials.json"))
     }
 

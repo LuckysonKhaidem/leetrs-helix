@@ -1,18 +1,19 @@
-//! Topic filter overlay rendering.
+//! Tag filter overlay rendering (shared by topics and companies).
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
+    style::Style,
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
 };
 
-use crate::tui::widgets::filter_state::{TopicFilterState, TopicInputMode};
+use crate::tui::widgets::filter_state::{TagFilterState, TagInputMode};
 
-/// Renders the topic filter overlay on top of the current frame.
-pub fn render_topic_overlay(
+/// Renders a tag filter overlay (topics or companies) on top of the frame.
+pub fn render_tag_overlay(
     frame: &mut Frame,
-    topic_filter: &mut TopicFilterState,
+    tag_filter: &mut TagFilterState,
     filtered_count: usize,
+    title: &str,
 ) {
     let overlay_area = frame
         .area()
@@ -20,33 +21,35 @@ pub fn render_topic_overlay(
 
     frame.render_widget(Clear, overlay_area);
 
-    let (search_title, search_style, border_color) = match topic_filter.mode {
-        TopicInputMode::Editing => (
+    let (search_title, search_style, border_color) = match tag_filter.mode {
+        TagInputMode::Editing => (
             format!(
-                " Search Topics ({}) — Press Esc to finish search ",
-                topic_filter.filtered_topics.len()
+                " Search ({}) — Press Esc to finish search ",
+                tag_filter.filtered_tags.len()
             ),
-            Style::default().fg(Color::Yellow),
-            Color::Yellow,
+            Style::default().fg(crate::theme::ACCENT),
+            crate::theme::ACCENT,
         ),
-        TopicInputMode::Normal => (
+        TagInputMode::Normal => (
             format!(
-                " Search Topics ({}) — Press / to search ",
-                topic_filter.filtered_topics.len()
+                " Search ({}) — Press / to search ",
+                tag_filter.filtered_tags.len()
             ),
-            Style::default().fg(Color::DarkGray),
-            Color::Cyan,
+            Style::default().fg(crate::theme::FG_SUBTLE),
+            crate::theme::ACCENT,
         ),
     };
 
-    let selected_count = topic_filter.selected_topics.len();
+    let selected_count = tag_filter.selected_tags.len();
     let title = if selected_count == 0 {
-        " Topic Filter — j/k: navigate  /: search  Space/Enter: toggle  c: clear  Esc: close "
-            .to_string()
+        format!(
+            " {} — j/k: navigate  /: search  Space/Enter: toggle  c: clear  Esc: close ",
+            title
+        )
     } else {
         format!(
-            " Topic Filter ({} selected) — j/k: navigate  /: search  Space/Enter: toggle  c: clear  Esc: close ",
-            selected_count
+            " {} ({} selected) — j/k: navigate  /: search  Space/Enter: toggle  c: clear  Esc: close ",
+            title, selected_count
         )
     };
 
@@ -67,59 +70,64 @@ pub fn render_topic_overlay(
         ])
         .split(inner);
 
-    let search_widget = Paragraph::new(topic_filter.search_input.value())
+    let search_widget = Paragraph::new(tag_filter.search_input.value())
         .style(search_style)
         .block(Block::default().borders(Borders::ALL).title(search_title));
     frame.render_widget(search_widget, layout[0]);
 
-    if let TopicInputMode::Editing = topic_filter.mode {
+    if let TagInputMode::Editing = tag_filter.mode {
         frame.set_cursor_position((
-            layout[0].x + topic_filter.search_input.visual_cursor() as u16 + 1,
+            layout[0].x + tag_filter.search_input.visual_cursor() as u16 + 1,
             layout[0].y + 1,
         ));
     }
 
-    if topic_filter.all_topics.is_empty() {
+    if tag_filter.all_tags.is_empty() {
         frame.render_widget(
-            Paragraph::new("No topics available — ensure the problem list is fully loaded.")
-                .style(Style::default().fg(Color::DarkGray)),
+            Paragraph::new("No tags available — ensure the problem list is fully loaded.")
+                .style(Style::default().fg(crate::theme::FG_SUBTLE)),
             layout[1],
         );
-    } else if topic_filter.filtered_topics.is_empty() {
+    } else if tag_filter.filtered_tags.is_empty() {
         frame.render_widget(
             Paragraph::new(format!(
-                "No topics match \"{}\"",
-                topic_filter.search_input.value()
+                "No tags match \"{}\"",
+                tag_filter.search_input.value()
             ))
-            .style(Style::default().fg(Color::DarkGray)),
+            .style(Style::default().fg(crate::theme::FG_SUBTLE)),
             layout[1],
         );
     } else {
-        let items: Vec<ListItem> = topic_filter
-            .filtered_topics
+        let items: Vec<ListItem> = tag_filter
+            .filtered_tags
             .iter()
             .map(|t| {
-                let (prefix, color) = if topic_filter.selected_topics.contains(t) {
-                    ("[x] ", Color::Green)
+                let (prefix, color) = if tag_filter.selected_tags.contains(t) {
+                    ("[x] ", crate::theme::EASY)
                 } else {
-                    ("[ ] ", Color::White)
+                    ("[ ] ", crate::theme::FG)
                 };
                 ListItem::new(format!("{}{}", prefix, t)).style(Style::default().fg(color))
             })
             .collect();
 
         let list = List::new(items)
-            .highlight_style(Style::default().bg(Color::DarkGray).fg(Color::White))
+            .highlight_style(
+                Style::default()
+                    .bg(crate::theme::SELECTION)
+                    .fg(crate::theme::FG),
+            )
             .highlight_symbol(">> ");
 
-        frame.render_stateful_widget(list, layout[1], &mut topic_filter.list_state);
+        frame.render_stateful_widget(list, layout[1], &mut tag_filter.list_state);
     }
 
     let hint = if filtered_count == 0 {
-        Paragraph::new("No problems match current filters").style(Style::default().fg(Color::Red))
+        Paragraph::new("No problems match current filters")
+            .style(Style::default().fg(crate::theme::HARD))
     } else {
         Paragraph::new(format!("{} problems match", filtered_count))
-            .style(Style::default().fg(Color::DarkGray))
+            .style(Style::default().fg(crate::theme::FG_SUBTLE))
     };
     frame.render_widget(hint, layout[2]);
 }
